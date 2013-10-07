@@ -1,0 +1,206 @@
+diff --git a/arch/arm/mach-msm/Kconfig b/arch/arm/mach-msm/Kconfig
+index da32eeb..ade578c 100755
+--- a/arch/arm/mach-msm/Kconfig
++++ b/arch/arm/mach-msm/Kconfig
+@@ -1055,6 +1055,10 @@ config MSM_DALRPC_TEST
+ 	help
+ 	  Exercises DAL RPC calls to QDSP6.
+ 
++config CPU_VOLTAGE_TABLE
++  	bool "Enable CPU Voltage Table via sysfs for adjustements"
++  	default n
++
+ if CPU_FREQ_MSM
+ 
+ config MSM_CPU_FREQ_SET_MIN_MAX
+diff --git a/arch/arm/mach-msm/acpuclock-8x60.c b/arch/arm/mach-msm/acpuclock-8x60.c
+index b9654b6..3250b4d 100644
+--- a/arch/arm/mach-msm/acpuclock-8x60.c
++++ b/arch/arm/mach-msm/acpuclock-8x60.c
+@@ -55,6 +55,7 @@
+ #define L_VAL_SCPLL_CAL_MAX	0x22 /* = 1836 MHz with 27MHz source */
+ 
+ #define MAX_VDD_SC		1350000 /* uV */
++#define MIN_VDD_SC		 800000 /* uV */
+ #define MAX_AXI			 310500 /* KHz */
+ #define SCPLL_LOW_VDD_FMAX	 594000 /* KHz */
+ #define SCPLL_LOW_VDD		1000000 /* uV */
+@@ -712,6 +713,51 @@ int acpuclk_set_rate(int cpu, unsigned long rate, enum setrate_reason reason)
+ 	return rc;
+ }
+ 
++#ifdef CONFIG_CPU_VOLTAGE_TABLE
++
++ssize_t acpuclk_get_vdd_levels_str(char *buf) {
++
++  int i, len = 0;
++
++  if (buf) {
++    mutex_lock(&drv_state.lock);
++
++    for (i = 0; acpu_freq_tbl[i].acpuclk_khz; i++) {
++      /* updated to use uv required by 8x60 architecture - faux123 */
++      len += sprintf(buf + len, "%8u: %8d\n", acpu_freq_tbl[i].acpuclk_khz, acpu_freq_tbl[i].vdd_sc );
++    }
++
++    mutex_unlock(&drv_state.lock);
++  }
++  return len;
++}
++
++/* updated to use uv required by 8x60 architecture - faux123 */
++void acpuclk_set_vdd(unsigned int khz, int vdd_uv) {
++
++  int i;
++  unsigned int new_vdd_uv;
++//  int vdd_uv;
++
++//  vdd_uv = vdd_mv * 1000;
++
++  mutex_lock(&drv_state.lock);
++
++  for (i = 0; acpu_freq_tbl[i].acpuclk_khz; i++) {
++    if (khz == 0)
++      new_vdd_uv = min(max((acpu_freq_tbl[i].vdd_sc + vdd_uv), (unsigned int)MIN_VDD_SC), (unsigned int)MAX_VDD_SC);
++    else if ( acpu_freq_tbl[i].acpuclk_khz == khz)
++      new_vdd_uv = min(max((unsigned int)vdd_uv, (unsigned int)MIN_VDD_SC), (unsigned int)MAX_VDD_SC);
++    else 
++      continue;
++
++    acpu_freq_tbl[i].vdd_sc = new_vdd_uv;
++  }
++
++  mutex_unlock(&drv_state.lock);
++}
++#endif  /* CONFIG_CPU_VOTALGE_TABLE */
++
+ static void __init scpll_init(int sc_pll)
+ {
+ 	uint32_t regval;
+diff --git a/drivers/cpufreq/cpufreq.c b/drivers/cpufreq/cpufreq.c
+index 6f12af0..e27c516 100644
+--- a/drivers/cpufreq/cpufreq.c
++++ b/drivers/cpufreq/cpufreq.c
+@@ -666,6 +666,68 @@ static ssize_t show_bios_limit(struct cpufreq_policy *policy, char *buf)
+ 	return sprintf(buf, "%u\n", policy->cpuinfo.max_freq);
+ }
+ 
++#ifdef CONFIG_CPU_VOLTAGE_TABLE
++
++extern ssize_t acpuclk_get_vdd_levels_str(char *buf);
++extern void acpuclk_set_vdd(unsigned acpu_khz, int vdd);
++
++static ssize_t show_vdd_levels(struct kobject *a, struct attribute *b, char *buf) {
++	return acpuclk_get_vdd_levels_str(buf);
++}
++
++static ssize_t store_vdd_levels(struct kobject *a, struct attribute *b, const char *buf, size_t count) {
++
++	int i = 0, j;
++	int pair[2] = { 0, 0 };
++	int sign = 0;
++
++	if (count < 1)
++		return 0;
++
++	if (buf[0] == '-') {
++		sign = -1;
++		i++;
++	}
++	else if (buf[0] == '+') {
++		sign = 1;
++		i++;
++	}
++
++	for (j = 0; i < count; i++) {
++	
++		char c = buf[i];
++		
++		if ((c >= '0') && (c <= '9')) {
++			pair[j] *= 10;
++			pair[j] += (c - '0');
++		}
++		else if ((c == ' ') || (c == '\t')) {
++			if (pair[j] != 0) {
++				j++;
++
++				if ((sign != 0) || (j > 1))
++					break;
++			}
++		}
++		else
++			break;
++	}
++
++	if (sign != 0) {
++		if (pair[0] > 0)
++			acpuclk_set_vdd(0, sign * pair[0]);
++	}
++	else {
++		if ((pair[0] > 0) && (pair[1] > 0))
++			acpuclk_set_vdd((unsigned)pair[0], pair[1]);
++		else
++			return -EINVAL;
++	}
++	return count;
++}
++
++#endif	/* CONFIG_CPU_VOLTAGE_TABLE */
++
+ cpufreq_freq_attr_ro_perm(cpuinfo_cur_freq, 0400);
+ cpufreq_freq_attr_ro(cpuinfo_min_freq);
+ cpufreq_freq_attr_ro(cpuinfo_max_freq);
+@@ -681,6 +743,10 @@ static ssize_t show_bios_limit(struct cpufreq_policy *policy, char *buf)
+ cpufreq_freq_attr_rw(scaling_governor);
+ cpufreq_freq_attr_rw(scaling_setspeed);
+ 
++#ifdef CONFIG_CPU_VOLTAGE_TABLE
++define_one_global_rw(vdd_levels);
++#endif
++
+ static struct attribute *default_attrs[] = {
+ 	&cpuinfo_min_freq.attr,
+ 	&cpuinfo_max_freq.attr,
+@@ -696,6 +762,18 @@ static ssize_t show_bios_limit(struct cpufreq_policy *policy, char *buf)
+ 	NULL
+ };
+ 
++#ifdef CONFIG_CPU_VOLTAGE_TABLE
++static struct attribute *vddtbl_attrs[] = {
++	&vdd_levels.attr,
++	NULL
++};
++
++static struct attribute_group vddtbl_attr_group = {
++	.attrs = vddtbl_attrs,
++	.name = "vdd_table",
++};
++#endif	/* CONFIG_CPU_VOLTAGE_TABLE */
++
+ struct kobject *cpufreq_global_kobject;
+ EXPORT_SYMBOL(cpufreq_global_kobject);
+ 
+@@ -2043,7 +2121,7 @@ int cpufreq_unregister_driver(struct cpufreq_driver *driver)
+ 
+ static int __init cpufreq_core_init(void)
+ {
+-	int cpu;
++	int cpu, rc;
+ 
+ 	for_each_possible_cpu(cpu) {
+ 		per_cpu(cpufreq_policy_cpu, cpu) = -1;
+@@ -2054,6 +2132,11 @@ static int __init cpufreq_core_init(void)
+ 						&cpu_sysdev_class.kset.kobj);
+ 	BUG_ON(!cpufreq_global_kobject);
+ 
++#ifdef CONFIG_CPU_VOLTAGE_TABLE
++	rc = sysfs_create_group(cpufreq_global_kobject, &vddtbl_attr_group);
++#endif	/* CONFIG_CPU_VOLTAGE_TABLE */
++
+ 	return 0;
+ }
+ core_initcall(cpufreq_core_init);
++
+-- 
+1.8.4
+
