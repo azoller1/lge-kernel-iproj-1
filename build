@@ -1,10 +1,8 @@
 #!/bin/bash
 
-cpus=$(grep "^processor" /proc/cpuinfo | wc -l)
-
 export USE_CCACHE=1
 export SUBARCH=arm
 export ARCH=arm
 export CROSS_COMPILE=~/arm-eabi-4.6/bin/arm-eabi-
 
-time make -j${cpus} $@
+time make
