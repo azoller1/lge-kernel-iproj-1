@@ -59,14 +59,10 @@ SUBSYS(net_cls)
 SUBSYS(blkio)
 #endif
 
-#ifdef CONFIG_CGROUP_PERF
-SUBSYS(perf)
-#endif
-
 /* */
 
-#ifdef CONFIG_CGROUP_BFQIO
-SUBSYS(bfqio)
+#ifdef CONFIG_CGROUP_PERF
+SUBSYS(perf)
 #endif
 
 /* */
